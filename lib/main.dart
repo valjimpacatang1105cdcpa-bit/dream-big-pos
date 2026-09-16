@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const DreamBigPosApp());
@@ -236,6 +239,8 @@ class CashierDashboardScreen extends StatefulWidget {
 }
 
 class _CashierDashboardScreenState extends State<CashierDashboardScreen> {
+  static const _transactionsKey = 'local_transactions';
+
   final products = const [
     _Product(name: 'Mineral Water', price: 20),
     _Product(name: 'Instant Noodles', price: 18),
@@ -247,6 +252,80 @@ class _CashierDashboardScreenState extends State<CashierDashboardScreen> {
 
   final Map<String, int> cart = {};
   String searchQuery = '';
+  int localTransactionCount = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    loadLocalTransactionCount();
+  }
+
+  Future<void> loadLocalTransactionCount() async {
+    final preferences = await SharedPreferences.getInstance();
+    final records = preferences.getStringList(_transactionsKey) ?? [];
+    if (!mounted) return;
+    setState(() => localTransactionCount = records.length);
+  }
+
+  Future<void> saveLocalTransaction({
+    required String receiptNumber,
+    required double amountReceived,
+    required double total,
+    required double change,
+  }) async {
+    final preferences = await SharedPreferences.getInstance();
+    final records = preferences.getStringList(_transactionsKey) ?? [];
+    final transaction = {
+      'receiptNumber': receiptNumber,
+      'cashier': widget.cashierName,
+      'total': total,
+      'amountReceived': amountReceived,
+      'change': change,
+      'createdAt': DateTime.now().toUtc().toIso8601String(),
+      'syncStatus': 'pending',
+    };
+    records.add(jsonEncode(transaction));
+    await preferences.setStringList(_transactionsKey, records);
+    if (!mounted) return;
+    setState(() => localTransactionCount = records.length);
+  }
+
+  Future<void> showLocalHistory() async {
+    final preferences = await SharedPreferences.getInstance();
+    final records = preferences.getStringList(_transactionsKey) ?? [];
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Local transactions (${records.length})'),
+        content: SizedBox(
+          width: 420,
+          child: records.isEmpty
+              ? const Text('No saved transactions yet.')
+              : ListView(
+                  shrinkWrap: true,
+                  children: records.reversed.map((record) {
+                    final transaction =
+                        jsonDecode(record) as Map<String, dynamic>;
+                    return ListTile(
+                      title: Text(transaction['receiptNumber'] as String),
+                      subtitle: Text(
+                        '₱${(transaction['total'] as num).toStringAsFixed(2)} · '
+                        '${transaction['syncStatus']}',
+                      ),
+                    );
+                  }).toList(),
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
 
   double get total {
     return products.fold(0, (sum, product) {
@@ -335,6 +414,12 @@ class _CashierDashboardScreenState extends State<CashierDashboardScreen> {
     final change = amountReceived - total;
     final saleTotal = total;
 
+    await saveLocalTransaction(
+      receiptNumber: receiptNumber,
+      amountReceived: amountReceived,
+      total: saleTotal,
+      change: change,
+    );
     setState(() => cart.clear());
     if (!mounted) return;
 
@@ -352,7 +437,7 @@ class _CashierDashboardScreenState extends State<CashierDashboardScreen> {
           'Receipt: $receiptNumber\n'
           'Total: ₱${saleTotal.toStringAsFixed(2)}\n'
           'Change: ₱${change.toStringAsFixed(2)}\n\n'
-          'Saved locally. Ready for the next customer.',
+          'Saved locally as pending sync. Ready for the next customer.',
         ),
         actions: [
           FilledButton(
@@ -380,9 +465,12 @@ class _CashierDashboardScreenState extends State<CashierDashboardScreen> {
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: Center(
-              child: Text(
-                widget.cashierName,
-                style: const TextStyle(fontSize: 13),
+              child: Tooltip(
+                message: '$localTransactionCount local transaction(s)',
+                child: Text(
+                  widget.cashierName,
+                  style: const TextStyle(fontSize: 13),
+                ),
               ),
             ),
           ),
@@ -411,7 +499,7 @@ class _CashierDashboardScreenState extends State<CashierDashboardScreen> {
               ListTile(
                 leading: const Icon(Icons.receipt_long),
                 title: const Text('Transaction history'),
-                onTap: () => showCashAction('Transaction history'),
+                onTap: showLocalHistory,
               ),
               ListTile(
                 leading: const Icon(Icons.account_balance_wallet_outlined),
