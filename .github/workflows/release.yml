@@ -1,0 +1,90 @@
+name: Build and release APK
+
+# Runs on every push to main. Validates the app (analyze + test), builds a
+# release APK, and — only if every check passes — publishes a new GitHub
+# Release with the APK attached. The in-app "Check for update" feature
+# (lib/update_checker.dart) reads this repo's /releases/latest endpoint, so
+# each successful run here is what that feature discovers.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Flutter analyze
+        run: flutter analyze
+
+      - name: Flutter test
+        run: flutter test
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      # Collision-safe, monotonically increasing version tag: the pubspec
+      # version (e.g. 1.0.0) plus this run's unique, ever-incrementing
+      # GitHub Actions run number as an extra version segment (e.g.
+      # v1.0.0.42). lib/update_checker.dart's isNewerVersion() compares
+      # version segments numerically left to right and treats a missing
+      # segment as 0, so this extra segment is always compared correctly
+      # and can never collide between two different workflow runs.
+      - name: Compute release tag
+        id: version
+        run: |
+          set -euo pipefail
+          BASE_VERSION=$(grep -m1 '^version:' pubspec.yaml | sed 's/version:\s*//' | cut -d'+' -f1 | tr -d '[:space:]')
+          if [ -z "$BASE_VERSION" ]; then
+            BASE_VERSION="0.0.0"
+          fi
+          TAG="v${BASE_VERSION}.${GITHUB_RUN_NUMBER}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Computed release tag: $TAG"
+
+      - name: Locate built APK
+        id: apk
+        run: |
+          set -euo pipefail
+          APK_PATH=$(find build/app/outputs/flutter-apk -maxdepth 1 -name '*release*.apk' | head -n1)
+          if [ -z "$APK_PATH" ]; then
+            echo "No release APK found" >&2
+            exit 1
+          fi
+          echo "path=$APK_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Dream Big POS ${{ steps.version.outputs.tag }}
+          body: |
+            Automated release built from commit ${{ github.sha }} on branch `main`.
+            This release was produced by GitHub Actions after flutter analyze
+            and flutter test both passed.
+          files: ${{ steps.apk.outputs.path }}
+          # Existing manually-created releases are untouched; this workflow
+          # only ever creates new tags going forward.
