@@ -308,6 +308,11 @@ class LocalDatabase {
     }
 
     await init();
+    // Seed the starter catalog only once per store; otherwise products the
+    // admin deleted would be re-inserted every time the screen loads.
+    final preferences = await SharedPreferences.getInstance();
+    final seededKey = 'products_seeded_$storeId';
+    if (preferences.getBool(seededKey) ?? false) return;
     await _database!.transaction((transaction) async {
       for (final product in products) {
         await transaction.insert('products', {
@@ -318,6 +323,7 @@ class LocalDatabase {
         }, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
     });
+    await preferences.setBool(seededKey, true);
   }
 
   Future<Map<String, int>> productStock({String storeId = 'default'}) async {

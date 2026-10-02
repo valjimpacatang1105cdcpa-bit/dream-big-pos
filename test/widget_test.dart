@@ -264,6 +264,24 @@ void main() {
     },
   );
 
+  test('deleted starter products are not re-seeded on the next load', () async {
+    final database = LocalDatabase();
+    const storeId = 'Reseed Store';
+    const starters = [
+      (name: 'Mineral Water', price: 20.0, stock: 20),
+      (name: 'Bread', price: 15.0, stock: 20),
+    ];
+    await database.initializeProducts(starters, storeId: storeId);
+    await database.deleteProduct(storeId: storeId, name: 'Bread');
+    await database.initializeProducts(starters, storeId: storeId);
+
+    final names = (await database.listProducts(
+      storeId: storeId,
+      includeArchived: true,
+    )).map((p) => p.name).toList();
+    expect(names, ['Mineral Water']);
+  });
+
   test(
     'deleting a product preserves historical transaction snapshots',
     () async {
