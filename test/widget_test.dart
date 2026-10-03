@@ -1107,14 +1107,40 @@ void main() {
         find.textContaining('May bagong update: v1.0.0.9'),
         findsOneWidget,
       );
-      expect(find.text('Update now'), findsOneWidget);
+      expect(find.text('Download & Install'), findsOneWidget);
       expect(
         find.text('Version 1.0.0+8 · Offline-ready terminal'),
         findsOneWidget,
       );
-      await tester.tap(find.text('Later'));
+    });
+
+    testWidgets('manual check button works without login', (tester) async {
+      var calls = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RoleSelectionScreen(
+            updateCheck: () async {
+              calls++;
+              return calls == 1
+                  ? const UpdateCheckResult(hasUpdate: false)
+                  : UpdateCheckResult(
+                      hasUpdate: true,
+                      release: rel('v1.0.0.10'),
+                    );
+            },
+          ),
+        ),
+      );
       await tester.pump();
-      expect(find.textContaining('May bagong update'), findsNothing);
+      await tester.scrollUntilVisible(find.text('Check for update'), 100);
+      await tester.tap(find.text('Check for update'));
+      await tester.pump();
+      await tester.pump();
+      expect(calls, 2);
+      expect(
+        find.textContaining('May bagong update: v1.0.0.10'),
+        findsOneWidget,
+      );
     });
 
     testWidgets('hidden when up to date or offline', (tester) async {

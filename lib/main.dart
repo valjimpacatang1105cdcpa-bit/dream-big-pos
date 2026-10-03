@@ -47,136 +47,13 @@ bool get _isFlutterTest {
   }
 }
 
-Future<UpdateCheckResult> _defaultSilentUpdateCheck() async {
-  final info = await PackageInfo.fromPlatform();
-  return UpdateChecker().checkForUpdate(currentVersion: info.version);
-}
-
-class RoleSelectionScreen extends StatefulWidget {
+class RoleSelectionScreen extends StatelessWidget {
   const RoleSelectionScreen({super.key, this.updateCheck, this.versionLabel});
 
   /// Injectable silent update check. When null, the real GitHub check runs
   /// (but never under flutter test).
   final SilentUpdateCheck? updateCheck;
   final String? versionLabel;
-
-  @override
-  State<RoleSelectionScreen> createState() => _RoleSelectionScreenState();
-}
-
-class _RoleSelectionScreenState extends State<RoleSelectionScreen>
-    with WidgetsBindingObserver {
-  static String? _dismissedTag;
-  ReleaseInfo? newRelease;
-  DateTime? lastCheck;
-  bool checking = false;
-  String version = '';
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    loadVersion();
-    silentCheck();
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed) return;
-    final last = lastCheck;
-    if (last == null ||
-        DateTime.now().difference(last) >= kUpdateRecheckInterval) {
-      silentCheck();
-    }
-  }
-
-  Future<void> loadVersion() async {
-    if (widget.versionLabel != null) {
-      version = widget.versionLabel!;
-      return;
-    }
-    if (_isFlutterTest) return;
-    try {
-      final info = await PackageInfo.fromPlatform();
-      if (!mounted) return;
-      setState(() => version = '${info.version}+${info.buildNumber}');
-    } catch (_) {}
-  }
-
-  Future<void> silentCheck() async {
-    if (checking) return;
-    final check =
-        widget.updateCheck ??
-        (_isFlutterTest ? null : _defaultSilentUpdateCheck);
-    if (check == null) return;
-    checking = true;
-    lastCheck = DateTime.now();
-    try {
-      final outcome = await check().timeout(const Duration(seconds: 12));
-      if (!mounted) return;
-      if (outcome.hasUpdate && outcome.release != null) {
-        setState(() => newRelease = outcome.release);
-      }
-    } catch (_) {
-      // Offline or failed: stay silent.
-    } finally {
-      checking = false;
-    }
-  }
-
-  Widget buildUpdateBanner(BuildContext context) {
-    final release = newRelease;
-    if (release == null || _dismissedTag == release.tagName) {
-      return const SizedBox.shrink();
-    }
-    return Card(
-      color: const Color(0xFFE8F5E9),
-      margin: const EdgeInsets.only(bottom: 20),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.system_update, color: Color(0xFF2E7D32)),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'May bagong update: ${release.tagName} — I-update na',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                FilledButton(
-                  onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const _AboutScreen()),
-                  ),
-                  child: const Text('Update now'),
-                ),
-                const SizedBox(width: 8),
-                TextButton(
-                  onPressed: () =>
-                      setState(() => _dismissedTag = release.tagName),
-                  child: const Text('Later'),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -206,7 +83,6 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen>
                   const SizedBox(height: 8),
                   const Text('Choose how you want to continue.'),
                   const SizedBox(height: 32),
-                  buildUpdateBanner(context),
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
@@ -237,11 +113,10 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen>
                     ),
                   ),
                   const SizedBox(height: 24),
-                  Text(
-                    version.isEmpty
-                        ? 'Offline-ready terminal'
-                        : 'Version $version · Offline-ready terminal',
-                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                  UpdatePanel(
+                    updateCheck: updateCheck,
+                    versionLabel: versionLabel,
+                    silentOnOpen: true,
                   ),
                 ],
               ),
@@ -1104,56 +979,143 @@ class _AdminFeatureCard extends StatelessWidget {
   }
 }
 
-/// Shows the installed app version and offers an on-demand (never
-/// automatic/background) "Check for update" action against the project's
-/// GitHub Releases. Network failures are handled gracefully and never affect
-/// the app's offline POS functionality.
-class _AboutScreen extends StatefulWidget {
+/// Shows the installed app version and an "Update" area used by both the
+/// first screen and About. Manual checks report failures; the silent check
+/// (on open and on resume, at most every [kUpdateRecheckInterval]) never
+/// surfaces errors and never blocks the offline POS.
+class _AboutScreen extends StatelessWidget {
   const _AboutScreen();
 
   @override
-  State<_AboutScreen> createState() => _AboutScreenState();
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('About')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: const [
+          UpdatePanel(showVersionCard: true),
+          SizedBox(height: 12),
+          Card(
+            child: ListTile(
+              leading: Icon(Icons.cloud_off),
+              title: Text('Offline-only app'),
+              subtitle: Text(
+                'The update check is optional and on-demand. Core POS '
+                'features keep working fully offline even if this fails.',
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
-class _AboutScreenState extends State<_AboutScreen> {
+class UpdatePanel extends StatefulWidget {
+  const UpdatePanel({
+    super.key,
+    this.updateCheck,
+    this.versionLabel,
+    this.silentOnOpen = false,
+    this.showVersionCard = false,
+  });
+
+  final SilentUpdateCheck? updateCheck;
+  final String? versionLabel;
+  final bool silentOnOpen;
+  final bool showVersionCard;
+
+  @override
+  State<UpdatePanel> createState() => _UpdatePanelState();
+}
+
+class _UpdatePanelState extends State<UpdatePanel> with WidgetsBindingObserver {
   String version = '';
   bool checking = false;
   UpdateCheckResult? result;
+  DateTime? lastCheck;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     loadVersion();
+    if (widget.silentOnOpen) runCheck(silent: true);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed || !widget.silentOnOpen) return;
+    final last = lastCheck;
+    if (downloading) return;
+    if (last == null ||
+        DateTime.now().difference(last) >= kUpdateRecheckInterval) {
+      runCheck(silent: true);
+    }
   }
 
   Future<void> loadVersion() async {
+    if (widget.versionLabel != null) {
+      version = widget.versionLabel!;
+      return;
+    }
+    if (_isFlutterTest) return;
     try {
       final info = await PackageInfo.fromPlatform();
       if (!mounted) return;
       setState(() => version = '${info.version}+${info.buildNumber}');
     } catch (_) {
-      // Package info can fail on unsupported test/platform setups; the
-      // update check still works using the pubspec version fallback.
       if (!mounted) return;
       setState(() => version = 'unknown');
     }
   }
 
-  Future<void> checkForUpdate() async {
+  Future<UpdateCheckResult> defaultCheck() async {
+    var current = version.split('+').first;
+    if (current.isEmpty || current == 'unknown') {
+      final info = await PackageInfo.fromPlatform();
+      current = info.version;
+    }
+    return UpdateChecker().checkForUpdate(currentVersion: current);
+  }
+
+  Future<void> runCheck({required bool silent}) async {
+    if (checking) return;
+    final check =
+        widget.updateCheck ?? (silent && _isFlutterTest ? null : defaultCheck);
+    if (check == null) return;
+    lastCheck = DateTime.now();
     setState(() {
       checking = true;
-      result = null;
+      if (!silent) result = null;
     });
-    final currentVersion = version.split('+').first;
-    final outcome = await UpdateChecker().checkForUpdate(
-      currentVersion: currentVersion,
-    );
+    UpdateCheckResult outcome;
+    try {
+      outcome = await check().timeout(const Duration(seconds: 12));
+    } catch (_) {
+      outcome = const UpdateCheckResult(
+        hasUpdate: false,
+        errorMessage:
+            'Could not check for updates. Please verify your internet '
+            'connection. The app continues to work fully offline.',
+      );
+    }
     if (!mounted) return;
     setState(() {
       checking = false;
-      result = outcome;
+      if (!silent || (outcome.hasUpdate && outcome.release != null)) {
+        result = outcome;
+      }
     });
   }
+
+  Future<void> checkForUpdate() => runCheck(silent: false);
 
   Future<void> openDownload(String url) async {
     final uri = Uri.tryParse(url);
@@ -1253,11 +1215,10 @@ class _AboutScreenState extends State<_AboutScreen> {
   @override
   Widget build(BuildContext context) {
     final outcome = result;
-    return Scaffold(
-      appBar: AppBar(title: const Text('About')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (widget.showVersionCard)
           Card(
             child: ListTile(
               leading: const Icon(Icons.storefront, color: Color(0xFF176B87)),
@@ -1267,94 +1228,93 @@ class _AboutScreenState extends State<_AboutScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 12),
-          FilledButton.icon(
-            onPressed: checking ? null : checkForUpdate,
-            icon: checking
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.system_update_alt),
-            label: Text(checking ? 'Checking…' : 'Check for update'),
-          ),
-          const SizedBox(height: 12),
-          if (outcome != null) ...[
-            if (outcome.failed)
-              Card(
-                color: const Color(0xFFFFF3E0),
-                child: ListTile(
-                  leading: const Icon(Icons.wifi_off),
-                  title: const Text('Update check failed'),
-                  subtitle: Text(outcome.errorMessage!),
-                ),
-              ),
-            if (!outcome.failed && outcome.hasUpdate && outcome.release != null)
-              Card(
-                color: const Color(0xFFE8F5E9),
-                child: ListTile(
-                  leading: const Icon(Icons.new_releases_outlined),
-                  title: Text('Update available: ${outcome.release!.tagName}'),
-                  subtitle: Text(
-                    downloading
-                        ? 'Downloading… ${progressPercent == null ? '' : '$progressPercent%'}'
-                        : 'Download inside the app, then confirm the Android install prompt.',
-                  ),
-                  trailing: downloading
-                      ? TextButton(
-                          onPressed: () => cancelToken?.cancel(),
-                          child: const Text('Cancel'),
-                        )
-                      : FilledButton(
-                          onPressed: () => downloadAndInstall(outcome.release!),
-                          child: const Text('Download & Install'),
-                        ),
-                ),
-              ),
-            if (outcome.hasUpdate && outcome.release != null && downloading)
-              LinearProgressIndicator(
-                value: progressPercent == null ? null : progressPercent! / 100,
-              ),
-            if (outcome.hasUpdate && downloadError != null)
-              Card(
-                color: const Color(0xFFFFF3E0),
-                child: ListTile(
-                  leading: const Icon(Icons.error_outline),
-                  title: const Text('Update problem'),
-                  subtitle: Text(downloadError!),
-                  trailing: TextButton(
-                    onPressed: () {
-                      final url = outcome.release?.htmlUrl;
-                      if (url != null) openDownload(url);
-                    },
-                    child: const Text('Open release page'),
-                  ),
-                ),
-              ),
-            if (outcome.hasUpdate && downloadNotice != null)
-              Card(child: ListTile(title: Text(downloadNotice!))),
-            if (!outcome.failed && !outcome.hasUpdate)
-              const Card(
-                child: ListTile(
-                  leading: Icon(Icons.check_circle_outline),
-                  title: Text('You are on the latest version'),
-                ),
-              ),
-          ],
-          const SizedBox(height: 12),
-          const Card(
-            child: ListTile(
-              leading: Icon(Icons.cloud_off),
-              title: Text('Offline-only app'),
-              subtitle: Text(
-                'The update check is optional and on-demand. Core POS '
-                'features keep working fully offline even if this fails.',
+        const SizedBox(height: 4),
+        OutlinedButton.icon(
+          onPressed: checking || downloading ? null : checkForUpdate,
+          icon: checking
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.system_update_alt),
+          label: Text(checking ? 'Checking…' : 'Check for update'),
+        ),
+        const SizedBox(height: 8),
+        if (outcome != null) ...[
+          if (outcome.failed)
+            Card(
+              color: const Color(0xFFFFF3E0),
+              child: ListTile(
+                leading: const Icon(Icons.wifi_off),
+                title: const Text('Update check failed'),
+                subtitle: Text(outcome.errorMessage!),
               ),
             ),
-          ),
+          if (!outcome.failed && outcome.hasUpdate && outcome.release != null)
+            Card(
+              color: const Color(0xFFE8F5E9),
+              child: ListTile(
+                leading: const Icon(Icons.new_releases_outlined),
+                title: Text('May bagong update: ${outcome.release!.tagName}'),
+                subtitle: Text(
+                  downloading
+                      ? 'Downloading… ${progressPercent == null ? '' : '$progressPercent%'}'
+                      : 'Download inside the app, then confirm the Android install prompt.',
+                ),
+                trailing: downloading
+                    ? TextButton(
+                        onPressed: () => cancelToken?.cancel(),
+                        child: const Text('Cancel'),
+                      )
+                    : FilledButton(
+                        onPressed: () => downloadAndInstall(outcome.release!),
+                        child: const Text('Download & Install'),
+                      ),
+              ),
+            ),
+          if (outcome.hasUpdate && outcome.release != null && downloading)
+            LinearProgressIndicator(
+              value: progressPercent == null ? null : progressPercent! / 100,
+            ),
+          if (outcome.hasUpdate && downloadError != null)
+            Card(
+              color: const Color(0xFFFFF3E0),
+              child: ListTile(
+                leading: const Icon(Icons.error_outline),
+                title: const Text('Update problem'),
+                subtitle: Text(downloadError!),
+                trailing: TextButton(
+                  onPressed: () {
+                    final url = outcome.release?.htmlUrl;
+                    if (url != null) openDownload(url);
+                  },
+                  child: const Text('Open release page'),
+                ),
+              ),
+            ),
+          if (outcome.hasUpdate && downloadNotice != null)
+            Card(child: ListTile(title: Text(downloadNotice!))),
+          if (!outcome.failed && !outcome.hasUpdate)
+            const Card(
+              child: ListTile(
+                leading: Icon(Icons.check_circle_outline),
+                title: Text('You are on the latest version'),
+              ),
+            ),
         ],
-      ),
+        if (!widget.showVersionCard)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              version.isEmpty
+                  ? 'Offline-ready terminal'
+                  : 'Version $version · Offline-ready terminal',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+            ),
+          ),
+      ],
     );
   }
 }
