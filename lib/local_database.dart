@@ -106,6 +106,7 @@ class LocalTransaction {
 class LocalDatabase {
   static const _databaseName = 'dream_big_pos.db';
   static const _databaseVersion = 8;
+  static const schemaVersion = _databaseVersion;
   static const _legacyTransactionsKey = 'local_transactions';
   static const _webStockKey = 'local_product_stock';
   static const _webPricesKey = 'local_product_prices';
@@ -689,6 +690,57 @@ class LocalDatabase {
       where: 'store_id = ? AND name = ?',
       whereArgs: [storeId, name],
     );
+  }
+
+  static const backupTableNames = [
+    'transactions',
+    'transaction_items',
+    'products',
+    'stock_movements',
+  ];
+
+  /// Raw rows of every SQLite table for backups. Web keeps everything in
+  /// SharedPreferences, so there are no tables to export there.
+  Future<Map<String, List<Map<String, Object?>>>> exportTables() async {
+    if (kIsWeb) return {for (final t in backupTableNames) t: []};
+    await init();
+    return {
+      for (final table in backupTableNames)
+        table: (await _database!.query(
+          table,
+          orderBy: 'id',
+        )).map((row) => Map<String, Object?>.from(row)).toList(),
+    };
+  }
+
+  /// Replaces every SQLite table with [tables] in ONE transaction: either the
+  /// whole restore succeeds or the existing data is left untouched.
+  Future<void> replaceAllTables(
+    Map<String, List<Map<String, Object?>>> tables,
+  ) async {
+    if (kIsWeb) return;
+    await init();
+    await _database!.transaction((txn) async {
+      final columnsByTable = <String, Set<String>>{};
+      for (final table in backupTableNames) {
+        final info = await txn.rawQuery('PRAGMA table_info($table)');
+        columnsByTable[table] = info.map((c) => c['name'] as String).toSet();
+      }
+      for (final table in backupTableNames.reversed) {
+        await txn.delete(table);
+      }
+      for (final table in backupTableNames) {
+        for (final row in tables[table] ?? const []) {
+          final unknown = row.keys.where(
+            (k) => !columnsByTable[table]!.contains(k),
+          );
+          if (unknown.isNotEmpty) {
+            throw FormatException('Unknown column ${unknown.first} in $table');
+          }
+          await txn.insert(table, row);
+        }
+      }
+    });
   }
 
   Future<List<StockMovement>> stockHistory({

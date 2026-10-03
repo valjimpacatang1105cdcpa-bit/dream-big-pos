@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:dream_big_pos/main.dart';
 import 'package:dream_big_pos/local_database.dart';
 import 'package:dream_big_pos/update_checker.dart';
+import 'package:dream_big_pos/backup_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:path/path.dart' as path;
@@ -622,6 +623,200 @@ void main() {
         destination: file,
       );
       expect(bad.status, ApkDownloadStatus.failed);
+    });
+  });
+
+  group('backup and restore', () {
+    Future<void> seed(LocalDatabase db, String store) async {
+      await db.addProduct(
+        storeId: store,
+        name: 'Backup Soap',
+        stock: 10,
+        price: 25,
+        cost: 15,
+      );
+      await db.setGcashBalance(store, 123.5);
+      await db.saveTransaction(
+        storeId: store,
+        cashier: 'Cashier A',
+        receiptNumber: '#BK-$store',
+        items: const [
+          LocalTransactionItem(
+            productName: 'Backup Soap',
+            quantity: 2,
+            unitPrice: 25,
+            unitCost: 15,
+          ),
+        ],
+        total: 50,
+        amountReceived: 50,
+        change: 0,
+        paymentMethod: 'cash',
+        paymentReference: null,
+        createdAt: DateTime(2024, 5, 1, 9),
+      );
+    }
+
+    test('roundtrip restores prefs of every type and all tables', () async {
+      SharedPreferences.setMockInitialValues({
+        'admin_email': 'a@b.com',
+        'local_stores': ['{"name":"S1"}'],
+        'some_flag': true,
+        'some_count': 7,
+        'backup_last_marker': 'keep-me',
+      });
+      final db = LocalDatabase();
+      const store = 'Backup Store';
+      await seed(db, store);
+      final service = BackupService(database: db);
+
+      final backup = await service.createBackup(
+        now: DateTime(2024, 5, 2),
+        appVersion: '1.0.0+1',
+      );
+      final parsed = BackupService.parse(BackupService.encode(backup));
+      expect(parsed.checksum, backup.checksum);
+      expect(parsed.prefs.containsKey('backup_last_marker'), isFalse);
+      expect(parsed.productCount, greaterThan(0));
+      expect(parsed.storeCount, 1);
+
+      // Change data after the backup, then restore.
+      await db.setGcashBalance(store, 1);
+      await db.addProduct(
+        storeId: store,
+        name: 'Added Later',
+        stock: 1,
+        price: 1,
+        cost: 0,
+      );
+      final preferences = await SharedPreferences.getInstance();
+      await preferences.setString('admin_email', 'changed@x.com');
+      await preferences.setString('stray_key', 'x');
+
+      await service.restore(parsed);
+
+      expect(preferences.getString('admin_email'), 'a@b.com');
+      expect(preferences.getBool('some_flag'), isTrue);
+      expect(preferences.getInt('some_count'), 7);
+      expect(preferences.containsKey('stray_key'), isFalse);
+      expect(preferences.getString('backup_last_marker'), 'keep-me');
+      expect(await db.gcashBalance(store), 123.5);
+      final names = (await db.listProducts(
+        storeId: store,
+        includeArchived: true,
+      )).map((p) => p.name);
+      expect(names, contains('Backup Soap'));
+      expect(names, isNot(contains('Added Later')));
+      final tx = await db.listTransactions(storeId: store);
+      expect(tx.single.items.single.unitCost, 15);
+    });
+
+    test('parse rejects invalid, tampered, and too-new backups', () async {
+      SharedPreferences.setMockInitialValues({'k': 'v'});
+      final service = BackupService(database: LocalDatabase());
+      final backup = await service.createBackup(now: DateTime(2024, 5, 2));
+      final good = utf8.decode(BackupService.encode(backup));
+
+      expect(
+        () => BackupService.parse(utf8.encode('not json')),
+        throwsA(isA<BackupException>()),
+      );
+      expect(
+        () => BackupService.parse(utf8.encode('{"app":"other"}')),
+        throwsA(isA<BackupException>()),
+      );
+      final tampered = good.replaceFirst('"v":"v"', '"v":"hacked"');
+      expect(tampered, isNot(good));
+      expect(
+        () => BackupService.parse(utf8.encode(tampered)),
+        throwsA(
+          isA<BackupException>().having(
+            (e) => e.message,
+            'message',
+            contains('checksum'),
+          ),
+        ),
+      );
+      final newer = good.replaceFirst(
+        '"formatVersion":$backupFormatVersion',
+        '"formatVersion":${backupFormatVersion + 1}',
+      );
+      expect(
+        () => BackupService.parse(utf8.encode(newer)),
+        throwsA(
+          isA<BackupException>().having(
+            (e) => e.message,
+            'message',
+            contains('newer'),
+          ),
+        ),
+      );
+      final badTable = jsonDecode(good) as Map<String, dynamic>;
+      (badTable['tables'] as Map<String, dynamic>)['evil'] = [];
+      expect(
+        () => BackupService.parse(utf8.encode(jsonEncode(badTable))),
+        throwsA(isA<BackupException>()),
+      );
+    });
+
+    test('empty backups are rejected so a restore cannot wipe data', () {
+      final empty = jsonEncode({
+        'app': 'dream_big_pos',
+        'formatVersion': 1,
+        'appVersion': 'x',
+        'createdAt': DateTime(2024).toIso8601String(),
+        'schemaVersion': 1,
+        'checksum': 'x',
+        'prefs': {},
+        'tables': {},
+      });
+      expect(
+        () => BackupService.parse(utf8.encode(empty)),
+        throwsA(isA<BackupException>()),
+      );
+    });
+
+    test('failed restore rolls back and keeps existing data', () async {
+      SharedPreferences.setMockInitialValues({'keep': 'me'});
+      final db = LocalDatabase();
+      const store = 'Rollback Store';
+      await seed(db, store);
+      final service = BackupService(database: db);
+
+      final bad = BackupFile(
+        formatVersion: 1,
+        appVersion: 'x',
+        createdAt: DateTime(2024),
+        schemaVersion: LocalDatabase.schemaVersion,
+        prefs: const {'replaced': 'yes'},
+        tables: {
+          'transactions': [],
+          'transaction_items': [],
+          'products': [
+            {'name': 'X', 'price': 1, 'no_such_column': 1},
+          ],
+          'stock_movements': [],
+        },
+        checksum: 'ignored',
+      );
+      await expectLater(service.restore(bad), throwsA(isA<BackupException>()));
+
+      final preferences = await SharedPreferences.getInstance();
+      expect(preferences.getString('keep'), 'me');
+      expect(preferences.containsKey('replaced'), isFalse);
+      expect(await db.gcashBalance(store), 123.5);
+      final names = (await db.listProducts(
+        storeId: store,
+        includeArchived: true,
+      )).map((p) => p.name);
+      expect(names, contains('Backup Soap'));
+    });
+
+    test('file name is timestamped and json', () {
+      expect(
+        BackupService.fileName(DateTime(2024, 5, 2, 3, 4, 5)),
+        'dream-big-pos-backup-20240502-030405.json',
+      );
     });
   });
 }

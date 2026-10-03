@@ -12,6 +12,7 @@ import 'dart:convert';
 
 import 'local_database.dart';
 import 'update_checker.dart';
+import 'backup_screen.dart';
 
 void main() {
   runApp(const DreamBigPosApp());
@@ -912,6 +913,13 @@ class _AdminDashboardScreenState extends State<_AdminDashboardScreen> {
               title: Text('Sync status'),
               subtitle: Text('Offline-only mode. Data stays on this device.'),
             ),
+          ),
+          _AdminFeatureCard(
+            icon: Icons.backup_outlined,
+            title: 'Backup & restore',
+            subtitle: 'Export or restore all data on this device',
+            onTap: () => Navigator.of(context)
+                .push(MaterialPageRoute(builder: (_) => const BackupScreen())),
           ),
           _AdminFeatureCard(
             icon: Icons.info_outline,
