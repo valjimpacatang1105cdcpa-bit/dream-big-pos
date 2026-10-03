@@ -314,6 +314,18 @@ class LocalDatabase {
     final preferences = await SharedPreferences.getInstance();
     final seededKey = 'products_seeded_$storeId';
     if (preferences.getBool(seededKey) ?? false) return;
+    // A store that already has any product row (even archived) was set up
+    // before this flag existed: never re-add starters the admin deleted.
+    final existing = Sqflite.firstIntValue(
+      await _database!.rawQuery(
+        'SELECT COUNT(*) FROM products WHERE store_id = ?',
+        [storeId],
+      ),
+    );
+    if ((existing ?? 0) > 0) {
+      await preferences.setBool(seededKey, true);
+      return;
+    }
     await _database!.transaction((transaction) async {
       for (final product in products) {
         await transaction.insert('products', {

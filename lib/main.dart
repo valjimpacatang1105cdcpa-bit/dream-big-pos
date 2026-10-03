@@ -2314,6 +2314,7 @@ class _CashierAccessScreenState extends State<CashierAccessScreen> {
                   const Text('Cashier Access'),
                   const SizedBox(height: 32),
                   DropdownButtonFormField<String>(
+                    isExpanded: true,
                     initialValue: selectedCashier,
                     decoration: const InputDecoration(
                       labelText: 'Select cashier',
@@ -2326,6 +2327,7 @@ class _CashierAccessScreenState extends State<CashierAccessScreen> {
                             value: cashier,
                             child: Text(
                               '${cashierNames[cashier]} · ${cashierStores[cashier]}',
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
                         )

@@ -989,18 +989,96 @@ void main() {
       await tester.pump(const Duration(seconds: 10));
     });
 
+    testWidgets(
+      'legacy store (no seed flag) with deleted starters is not re-seeded; '
+      'cashier sees the same 4 products as admin',
+      (tester) async {
+        const store = 'Legacy Store X';
+        String storeJson(String name) =>
+            jsonEncode({'id': '1', 'name': name, 'location': ''});
+        // No products_seeded_* flag, as on a device updated from an old build.
+        SharedPreferences.setMockInitialValues({
+          'local_stores': [storeJson(store)],
+          'cashiers_$store': [
+            // Stored store field differs in case/whitespace from the real name.
+            jsonEncode({
+              'name': 'robert',
+              'pin': '1234',
+              'store': ' legacy store x',
+            }),
+          ],
+        });
+        final db = LocalDatabase();
+        await tester.runAsync(() async {
+          for (final p in [
+            'Canned Sardines',
+            'Coffee Sachet',
+            'Instant Noodles',
+            'Mineral Water',
+          ]) {
+            await db.addProduct(
+              storeId: store,
+              name: p,
+              stock: 20,
+              price: 10,
+              cost: 5,
+            );
+          }
+          // Admin inventory load (seeding step) then cashier load.
+          await db.initializeProducts(const [
+            (name: 'Mineral Water', price: 20.0, stock: 20),
+            (name: 'Bread', price: 15.0, stock: 20),
+            (name: 'Soft Drink', price: 25.0, stock: 20),
+          ], storeId: store);
+          final admin = (await db.listProducts(
+            storeId: store,
+            includeArchived: true,
+          )).map((p) => p.name).toSet();
+          expect(admin, {
+            'Canned Sardines',
+            'Coffee Sachet',
+            'Instant Noodles',
+            'Mineral Water',
+          });
+        });
+
+        await tester.pumpWidget(const MaterialApp(home: CashierAccessScreen()));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byType(DropdownButtonFormField<String>));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('robert · $store').last);
+        await tester.pumpAndSettle();
+        for (final d in ['1', '2', '3', '4']) {
+          await tester.tap(find.text(d));
+          await tester.pump();
+        }
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.runAsync(() => Future.delayed(const Duration(seconds: 1)));
+        await tester.pump();
+
+        final dashboard = tester.widget<CashierDashboardScreen>(
+          find.byType(CashierDashboardScreen),
+        );
+        expect(dashboard.storeName, store);
+        expect(find.text('Canned Sardines'), findsWidgets);
+        expect(find.text('Bread'), findsNothing);
+        expect(find.text('Soft Drink'), findsNothing);
+        await tester.pump(const Duration(seconds: 10));
+      },
+    );
+
     testWidgets('stores stay separate', (tester) async {
       SharedPreferences.setMockInitialValues({});
       final db = LocalDatabase();
       await tester.runAsync(() async {
         await db.initializeProducts(const [
           (name: 'Only In A', price: 1.0, stock: 1),
-        ], storeId: 'Store A');
+        ], storeId: 'Isolated Store A');
         await db.initializeProducts(const [
           (name: 'Only In B', price: 1.0, stock: 1),
-        ], storeId: 'Store B');
+        ], storeId: 'Isolated Store B');
       });
-      await pumpDashboard(tester, 'Store B');
+      await pumpDashboard(tester, 'Isolated Store B');
       expect(find.text('Only In B'), findsWidgets);
       expect(find.text('Only In A'), findsNothing);
     });
