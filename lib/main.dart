@@ -1370,14 +1370,10 @@ class _AdminInventoryScreenState extends State<_AdminInventoryScreen> {
   }
 
   Future<void> load() async {
-    await database.initializeProducts([
-      (name: 'Mineral Water', price: 20, stock: 20),
-      (name: 'Instant Noodles', price: 18, stock: 20),
-      (name: 'Coffee Sachet', price: 12, stock: 20),
-      (name: 'Canned Sardines', price: 32, stock: 20),
-      (name: 'Bread', price: 15, stock: 20),
-      (name: 'Soft Drink', price: 25, stock: 20),
-    ], storeId: widget.store.name);
+    await database.initializeProducts(
+      _starterProducts,
+      storeId: widget.store.name,
+    );
     final list = await database.listProducts(
       storeId: widget.store.name,
       includeArchived: true,
@@ -1392,6 +1388,7 @@ class _AdminInventoryScreenState extends State<_AdminInventoryScreen> {
               initialStock: product.stock,
               cost: product.cost,
               isActive: product.isActive,
+              lowStockThreshold: product.lowStockThreshold,
             )..stock = product.stock,
           )
           .toList();
@@ -1663,6 +1660,12 @@ class _CashierManagementScreenState extends State<_CashierManagementScreen> {
   Future<void> add() async {
     final n = name.text.trim(), p = pin.text.trim();
     if (n.isEmpty || p.length != 4 || int.tryParse(p) == null) return;
+    if (cashiers.any((c) => c['name']!.toLowerCase() == n.toLowerCase())) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('A cashier named "$n" already exists here.')),
+      );
+      return;
+    }
     cashiers.add({'name': n, 'pin': p, 'store': widget.store.name});
     await _persist();
     name.clear();
@@ -2149,6 +2152,10 @@ class _FeeRuleEditorState extends State<_FeeRuleEditor> {
   }
 }
 
+/// Unique login identity for a cashier: the same name can exist in different
+/// stores without the accounts overwriting each other.
+String cashierLoginKey(String store, String name) => '$store\u0000$name';
+
 class CashierAccessScreen extends StatefulWidget {
   const CashierAccessScreen({super.key});
 
@@ -2161,6 +2168,7 @@ class _CashierAccessScreenState extends State<CashierAccessScreen> {
   final storeStorage = _StoreStorage();
   Map<String, String> cashierStores = const {};
   Map<String, String> cashierPins = const {};
+  Map<String, String> cashierNames = const {};
 
   String? selectedCashier;
   String pin = '';
@@ -2175,37 +2183,32 @@ class _CashierAccessScreenState extends State<CashierAccessScreen> {
   Future<void> loadStoreAssignments() async {
     final stores = await storeStorage.load();
     final preferences = await SharedPreferences.getInstance();
-    final stored = <Map<String, String>>[];
+    final keys = <String>[];
+    final names = <String, String>{};
+    final storesByKey = <String, String>{};
+    final pins = <String, String>{};
     for (final store in stores) {
       for (final raw
           in preferences.getStringList('cashiers_${store.name}') ?? []) {
-        stored.add(Map<String, String>.from(jsonDecode(raw)));
+        final cashier = Map<String, String>.from(jsonDecode(raw));
+        final key = cashierLoginKey(store.name, cashier['name']!);
+        keys.add(key);
+        names[key] = cashier['name']!;
+        storesByKey[key] = store.name;
+        pins[key] = cashier['pin'] ?? '';
       }
     }
     if (!mounted) return;
-    if (stores.isEmpty) {
-      setState(() {
-        cashiers = [];
-        cashierStores = const {};
-        cashierPins = const {};
-      });
-      return;
-    }
     setState(() {
-      cashiers = stored.map((cashier) => cashier['name']!).toList();
-      if (stored.isNotEmpty) {
-        cashierPins = {
-          for (final cashier in stored) cashier['name']!: cashier['pin']!,
-        };
+      cashiers = keys;
+      cashierNames = names;
+      cashierStores = storesByKey;
+      cashierPins = pins;
+      if (selectedCashier != null && !keys.contains(selectedCashier)) {
+        selectedCashier = null;
       }
-      cashierStores = {
-        for (var index = 0; index < cashiers.length; index++)
-          cashiers[index]: stored[index]['store']!,
-      };
-      if (selectedCashier != null) {
-        pin = '';
-        errorMessage = null;
-      }
+      pin = '';
+      errorMessage = null;
     });
   }
 
@@ -2235,7 +2238,7 @@ class _CashierAccessScreenState extends State<CashierAccessScreen> {
     if (!mounted) return;
 
     final configuredPin = cashierPins[selectedCashier];
-    if (configuredPin == null) {
+    if (configuredPin == null || configuredPin.isEmpty) {
       setState(() {
         pin = '';
         errorMessage = 'No local PIN is configured for this cashier.';
@@ -2246,7 +2249,7 @@ class _CashierAccessScreenState extends State<CashierAccessScreen> {
       Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => CashierDashboardScreen(
-            cashierName: selectedCashier!,
+            cashierName: cashierNames[selectedCashier!]!,
             storeName: cashierStores[selectedCashier!]!,
           ),
         ),
@@ -2321,7 +2324,9 @@ class _CashierAccessScreenState extends State<CashierAccessScreen> {
                         .map(
                           (cashier) => DropdownMenuItem(
                             value: cashier,
-                            child: Text(cashier),
+                            child: Text(
+                              '${cashierNames[cashier]} · ${cashierStores[cashier]}',
+                            ),
                           ),
                         )
                         .toList(),
@@ -2435,14 +2440,9 @@ class CashierDashboardScreen extends StatefulWidget {
 
 class _CashierDashboardScreenState extends State<CashierDashboardScreen>
     with WidgetsBindingObserver {
-  final products = [
-    _Product(name: 'Mineral Water', price: 20, initialStock: 20),
-    _Product(name: 'Instant Noodles', price: 18, initialStock: 20),
-    _Product(name: 'Coffee Sachet', price: 12, initialStock: 20),
-    _Product(name: 'Canned Sardines', price: 32, initialStock: 20),
-    _Product(name: 'Bread', price: 15, initialStock: 20),
-    _Product(name: 'Soft Drink', price: 25, initialStock: 20),
-  ];
+  // Loaded from the local database (the same source the admin inventory
+  // screen edits), so deletes/archives/edits/additions always match.
+  List<_Product> products = [];
 
   final Map<String, int> cart = {};
   final localDatabase = LocalDatabase();
@@ -2469,9 +2469,30 @@ class _CashierDashboardScreenState extends State<CashierDashboardScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      ensureStillAuthorized();
+      loadProductStock();
       loadGcashBalance();
       loadLocalTransactionCount();
     }
+  }
+
+  /// A cashier removed by the admin (or whose PIN/store changed) must lose
+  /// access immediately, so the session is re-checked against the stored
+  /// cashier list.
+  Future<bool> ensureStillAuthorized() async {
+    final preferences = await SharedPreferences.getInstance();
+    final stillListed =
+        (preferences.getStringList('cashiers_${widget.storeName}') ?? []).any(
+          (raw) => jsonDecode(raw)['name'] == widget.cashierName,
+        );
+    if (stillListed || !mounted) return true;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('This cashier account was removed by the admin.'),
+      ),
+    );
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    return false;
   }
 
   Future<void> loadGcashBalance() async {
@@ -2481,20 +2502,27 @@ class _CashierDashboardScreenState extends State<CashierDashboardScreen>
   }
 
   Future<void> loadProductStock() async {
-    await localDatabase.initializeProducts([
-      for (final product in products)
-        (name: product.name, price: product.price, stock: product.initialStock),
-    ], storeId: widget.storeName);
-    final stock = await localDatabase.productStock(storeId: widget.storeName);
-    final costs = await localDatabase.productCosts(storeId: widget.storeName);
+    await localDatabase.initializeProducts(
+      _starterProducts,
+      storeId: widget.storeName,
+    );
+    final list = await localDatabase.listProducts(storeId: widget.storeName);
     if (!mounted) return;
     setState(() {
-      for (final product in products) {
-        product.stock = stock[product.name] ?? product.initialStock;
-        // Cost is kept in memory only for transaction snapshotting; it is
-        // never displayed anywhere on the cashier dashboard.
-        product.cost = costs[product.name] ?? 0;
-      }
+      // Cost is kept in memory only for transaction snapshotting; it is
+      // never displayed anywhere on the cashier dashboard.
+      products = [
+        for (final item in list)
+          _Product(
+            name: item.name,
+            price: item.price,
+            initialStock: item.stock,
+            cost: item.cost,
+            lowStockThreshold: item.lowStockThreshold,
+          )..stock = item.stock,
+      ];
+      final names = products.map((p) => p.name).toSet();
+      cart.removeWhere((name, _) => !names.contains(name));
       stockLoaded = true;
     });
   }
@@ -2586,13 +2614,7 @@ class _CashierDashboardScreenState extends State<CashierDashboardScreen>
 
   Future<void> showInventory() async {
     await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => _InventoryScreen(
-          products: products,
-          localDatabase: localDatabase,
-          storeId: widget.storeName,
-        ),
-      ),
+      MaterialPageRoute(builder: (_) => _InventoryScreen(products: products)),
     );
     if (!mounted) return;
     await WidgetsBinding.instance.endOfFrame;
@@ -2628,6 +2650,7 @@ class _CashierDashboardScreenState extends State<CashierDashboardScreen>
   }
 
   Future<void> showServices({required String type}) async {
+    if (!await ensureStillAuthorized()) return;
     final matrix = await _FeeMatrixStorage().load(widget.storeName);
     if (!mounted) return;
     final draft = await showDialog<_ServiceDraft>(
@@ -2685,6 +2708,10 @@ class _CashierDashboardScreenState extends State<CashierDashboardScreen>
   }
 
   Future<void> showCashPayment() async {
+    if (!await ensureStillAuthorized()) return;
+    // Pick up admin price/stock/delete changes made since the last load.
+    await loadProductStock();
+    if (!mounted) return;
     final payment = await showDialog<_PaymentResult>(
       context: context,
       builder: (_) => _PaymentDialog(total: total),
@@ -3525,152 +3552,27 @@ class _AdminEditProductScreenState extends State<_AdminEditProductScreen> {
   }
 }
 
-class _EditProductScreen extends StatefulWidget {
-  const _EditProductScreen({
-    required this.productName,
-    required this.initialStock,
-    required this.initialPrice,
-  });
-
-  final String productName;
-  final int initialStock;
-  final double initialPrice;
-
-  @override
-  State<_EditProductScreen> createState() => _EditProductScreenState();
-}
-
-class _EditProductScreenState extends State<_EditProductScreen> {
-  late final TextEditingController stockController;
-  late final TextEditingController priceController;
-  String? errorMessage;
-
-  @override
-  void initState() {
-    super.initState();
-    stockController = TextEditingController(text: '${widget.initialStock}');
-    priceController = TextEditingController(
-      text: widget.initialPrice.toStringAsFixed(2),
-    );
-  }
-
-  @override
-  void dispose() {
-    stockController.dispose();
-    priceController.dispose();
-    super.dispose();
-  }
-
-  void save() {
-    final stock = int.tryParse(stockController.text.trim());
-    final price = double.tryParse(priceController.text.trim());
-    if (stock == null || stock < 0 || price == null || price < 0) {
-      setState(() => errorMessage = 'Enter valid non-negative values.');
-      return;
-    }
-    Navigator.of(context).pop((stock: stock, price: price));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Edit ${widget.productName}'),
-        actions: [TextButton(onPressed: save, child: const Text('Save'))],
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Text(
-            widget.productName,
-            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 24),
-          TextField(
-            controller: stockController,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
-              labelText: 'Stock quantity',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: priceController,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(
-              labelText: 'Selling price',
-              prefixText: '₱ ',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          if (errorMessage != null) ...[
-            const SizedBox(height: 12),
-            Text(errorMessage!, style: const TextStyle(color: Colors.red)),
-          ],
-          const SizedBox(height: 24),
-          FilledButton(
-            onPressed: save,
-            child: const Text('Save product changes'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _InventoryScreen extends StatefulWidget {
-  const _InventoryScreen({
-    required this.products,
-    required this.localDatabase,
-    this.storeId = 'default',
-  });
+  const _InventoryScreen({required this.products});
 
   final List<_Product> products;
-  final LocalDatabase localDatabase;
-  final String storeId;
 
   @override
   State<_InventoryScreen> createState() => _InventoryScreenState();
 }
 
+/// Read-only stock view for cashiers. Prices, stock, costs and thresholds are
+/// edited only in the admin inventory screen; there is intentionally no
+/// write path to the database from here.
 class _InventoryScreenState extends State<_InventoryScreen> {
-  static const lowStockLimit = 5;
-
-  Future<void> editProduct(_Product product) async {
-    final result = await Navigator.of(context)
-        .push<({int stock, double price})>(
-          MaterialPageRoute(
-            builder: (_) => _EditProductScreen(
-              productName: product.name,
-              initialStock: product.stock,
-              initialPrice: product.price,
-            ),
-          ),
-        );
-    if (!mounted || result == null) return;
-
-    await widget.localDatabase.updateProduct(
-      name: product.name,
-      price: result.price,
-      stock: result.stock,
-      storeId: widget.storeId,
-    );
-    if (!mounted) return;
-    setState(() {
-      product.stock = result.stock;
-      product.price = result.price;
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     final lowStockCount = widget.products
-        .where((product) => product.stock <= lowStockLimit)
+        .where((product) => product.stock <= product.lowStockThreshold)
         .length;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Inventory management'),
+        title: const Text('Stock (view only)'),
         actions: [
           if (lowStockCount > 0)
             Padding(
@@ -3690,7 +3592,7 @@ class _InventoryScreenState extends State<_InventoryScreen> {
         separatorBuilder: (_, _) => const SizedBox(height: 8),
         itemBuilder: (context, index) {
           final product = widget.products[index];
-          final isLow = product.stock <= lowStockLimit;
+          final isLow = product.stock <= product.lowStockThreshold;
           return Card(
             child: ListTile(
               leading: Icon(
@@ -3703,10 +3605,6 @@ class _InventoryScreenState extends State<_InventoryScreen> {
                 '${product.stock} in stock'
                 '${isLow ? ' · LOW STOCK' : ''}',
               ),
-              trailing: FilledButton.tonal(
-                onPressed: () => editProduct(product),
-                child: const Text('Edit'),
-              ),
             ),
           );
         },
@@ -3715,6 +3613,15 @@ class _InventoryScreenState extends State<_InventoryScreen> {
   }
 }
 
+const _starterProducts = [
+  (name: 'Mineral Water', price: 20.0, stock: 20),
+  (name: 'Instant Noodles', price: 18.0, stock: 20),
+  (name: 'Coffee Sachet', price: 12.0, stock: 20),
+  (name: 'Canned Sardines', price: 32.0, stock: 20),
+  (name: 'Bread', price: 15.0, stock: 20),
+  (name: 'Soft Drink', price: 25.0, stock: 20),
+];
+
 class _Product {
   _Product({
     required this.name,
@@ -3722,6 +3629,7 @@ class _Product {
     required this.initialStock,
     this.cost = 0,
     this.isActive = true,
+    this.lowStockThreshold = 5,
   });
 
   final String name;
@@ -3732,6 +3640,7 @@ class _Product {
   final int initialStock;
   int stock = 0;
   bool isActive;
+  int lowStockThreshold;
 }
 
 class _OfflineBanner extends StatelessWidget {

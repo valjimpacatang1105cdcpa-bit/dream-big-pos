@@ -5,6 +5,7 @@
 // gestures. You can also use WidgetTester to find child widgets in the widget
 // tree, read text, and verify that the values of widget properties are correct.
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:dream_big_pos/main.dart';
@@ -817,6 +818,191 @@ void main() {
         BackupService.fileName(DateTime(2024, 5, 2, 3, 4, 5)),
         'dream-big-pos-backup-20240502-030405.json',
       );
+    });
+  });
+
+  group('cashier dashboard matches admin inventory', () {
+    Future<void> pumpDashboard(WidgetTester tester, String store) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CashierDashboardScreen(
+            cashierName: 'Cashier A',
+            storeName: store,
+          ),
+        ),
+      );
+      await tester.runAsync(() => Future.delayed(const Duration(seconds: 1)));
+      await tester.pump();
+    }
+
+    testWidgets('deleted, archived, added, and renamed-price products sync', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      const store = 'Sync Store';
+      final db = LocalDatabase();
+      await tester.runAsync(() async {
+        await db.initializeProducts(const [
+          (name: 'Mineral Water', price: 20.0, stock: 20),
+          (name: 'Bread', price: 15.0, stock: 20),
+          (name: 'Soft Drink', price: 25.0, stock: 20),
+        ], storeId: store);
+        await db.deleteProduct(storeId: store, name: 'Bread');
+        await db.archiveProduct(storeId: store, name: 'Soft Drink');
+        await db.addProduct(
+          storeId: store,
+          name: 'Admin Added',
+          stock: 5,
+          price: 99,
+          cost: 50,
+        );
+      });
+
+      await pumpDashboard(tester, store);
+
+      expect(find.text('Mineral Water'), findsWidgets);
+      expect(find.text('Admin Added'), findsWidgets);
+      expect(find.text('Bread'), findsNothing);
+      expect(find.text('Soft Drink'), findsNothing);
+    });
+
+    testWidgets('admin price/stock edit shows on the cashier dashboard', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      const store = 'Edit Sync Store';
+      final db = LocalDatabase();
+      await tester.runAsync(() async {
+        await db.initializeProducts(const [], storeId: store);
+        await db.addProduct(
+          storeId: store,
+          name: 'Edited Item',
+          stock: 8,
+          price: 10,
+          cost: 4,
+        );
+        await db.updateProduct(
+          storeId: store,
+          name: 'Edited Item',
+          price: 77,
+          cost: 4,
+          stock: 3,
+        );
+      });
+      await pumpDashboard(tester, store);
+      expect(find.text('Edited Item'), findsWidgets);
+      expect(find.textContaining('77.00'), findsWidgets);
+      // Admin-only cost must never be shown to the cashier.
+      expect(find.textContaining('Cost'), findsNothing);
+      expect(find.textContaining('Profit'), findsNothing);
+    });
+
+    testWidgets('removed cashier loses access when the app resumes', (
+      tester,
+    ) async {
+      const store = 'Auth Store';
+      SharedPreferences.setMockInitialValues({
+        'cashiers_$store': [
+          jsonEncode({'name': 'Cashier A', 'pin': '1234', 'store': store}),
+        ],
+      });
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: TextButton(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const CashierDashboardScreen(
+                      cashierName: 'Cashier A',
+                      storeName: store,
+                    ),
+                  ),
+                ),
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      expect(find.byType(CashierDashboardScreen), findsOneWidget);
+
+      await tester.runAsync(() async {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setStringList('cashiers_$store', []);
+      });
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.runAsync(() => Future.delayed(const Duration(seconds: 1)));
+      await tester.pumpAndSettle();
+      expect(find.byType(CashierDashboardScreen), findsNothing);
+      await tester.pump(const Duration(seconds: 10));
+    });
+
+    testWidgets('same-named cashiers in different stores log in separately', (
+      tester,
+    ) async {
+      String store(String id, String name) =>
+          jsonEncode({'id': id, 'name': name, 'location': ''});
+      SharedPreferences.setMockInitialValues({
+        'local_stores': [store('1', 'Store A'), store('2', 'Store B')],
+        'cashiers_Store A': [
+          jsonEncode({'name': 'Sam', 'pin': '1111', 'store': 'Store A'}),
+        ],
+        'cashiers_Store B': [
+          jsonEncode({'name': 'Sam', 'pin': '2222', 'store': 'Store B'}),
+        ],
+      });
+      await tester.pumpWidget(const MaterialApp(home: CashierAccessScreen()));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byType(DropdownButtonFormField<String>));
+      await tester.pumpAndSettle();
+      expect(find.text('Sam · Store A'), findsWidgets);
+      expect(find.text('Sam · Store B'), findsWidgets);
+      await tester.tap(find.text('Sam · Store B').last);
+      await tester.pumpAndSettle();
+      expect(find.text('Assigned store: Store B'), findsOneWidget);
+
+      // Store A's PIN must not unlock Store B's Sam.
+      for (final d in ['1', '1', '1', '1']) {
+        await tester.tap(find.text(d));
+        await tester.pump();
+      }
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump();
+      expect(find.byType(CashierDashboardScreen), findsNothing);
+      expect(find.textContaining('Wrong PIN'), findsOneWidget);
+
+      for (final d in ['2', '2', '2', '2']) {
+        await tester.tap(find.text(d));
+        await tester.pump();
+      }
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump();
+      final dashboard = tester.widget<CashierDashboardScreen>(
+        find.byType(CashierDashboardScreen),
+      );
+      expect(dashboard.storeName, 'Store B');
+      expect(dashboard.cashierName, 'Sam');
+      await tester.pump(const Duration(seconds: 10));
+    });
+
+    testWidgets('stores stay separate', (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final db = LocalDatabase();
+      await tester.runAsync(() async {
+        await db.initializeProducts(const [
+          (name: 'Only In A', price: 1.0, stock: 1),
+        ], storeId: 'Store A');
+        await db.initializeProducts(const [
+          (name: 'Only In B', price: 1.0, stock: 1),
+        ], storeId: 'Store B');
+      });
+      await pumpDashboard(tester, 'Store B');
+      expect(find.text('Only In B'), findsWidgets);
+      expect(find.text('Only In A'), findsNothing);
     });
   });
 }
