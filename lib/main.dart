@@ -3,6 +3,10 @@ import 'package:sqflite/sqflite.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:open_filex/open_filex.dart';
+import 'package:path_provider/path_provider.dart';
+
+import 'dart:io' show File;
 
 import 'dart:convert';
 
@@ -1003,7 +1007,96 @@ class _AboutScreenState extends State<_AboutScreen> {
   Future<void> openDownload(String url) async {
     final uri = Uri.tryParse(url);
     if (uri == null) return;
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
+    try {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      setState(() => downloadError = 'Could not open the browser.');
+    }
+  }
+
+  bool downloading = false;
+  int? progressPercent;
+  String? downloadError;
+  String? downloadNotice;
+  DownloadCancelToken? cancelToken;
+
+  /// Downloads the release APK inside the app, then hands it to the Android
+  /// package installer. Android always asks the user to confirm the install
+  /// (and to allow "Install unknown apps" for this app the first time).
+  Future<void> downloadAndInstall(ReleaseInfo release) async {
+    final url = release.apkDownloadUrl;
+    if (url == null || !isAllowedApkUrl(url)) {
+      setState(() {
+        downloadError =
+            'No trusted APK is attached to this release. Open the release '
+            'page instead.';
+      });
+      return;
+    }
+    final token = DownloadCancelToken();
+    setState(() {
+      cancelToken = token;
+      downloading = true;
+      progressPercent = 0;
+      downloadError = null;
+      downloadNotice = null;
+    });
+    try {
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/dream_big_pos_update.apk');
+      final outcome = await ApkDownloader().download(
+        url: url,
+        destination: file,
+        expectedSize: release.apkSize,
+        cancelToken: token,
+        onProgress: (received, total) {
+          final percent = downloadPercent(received, total);
+          if (mounted && percent != progressPercent) {
+            setState(() => progressPercent = percent);
+          }
+        },
+      );
+      if (!mounted) return;
+      if (outcome.status == ApkDownloadStatus.success) {
+        final opened = await OpenFilex.open(
+          outcome.file!.path,
+          type: 'application/vnd.android.package-archive',
+        );
+        if (!mounted) return;
+        setState(() {
+          downloading = false;
+          if (opened.type == ResultType.done) {
+            downloadNotice =
+                'Download complete. Confirm the install on the Android '
+                'prompt. If Android asks, allow "Install unknown apps" for '
+                'Dream Big POS in Settings, then tap Download & Install '
+                'again.';
+          } else {
+            downloadError =
+                'Could not start the installer (${opened.message}). Allow '
+                '"Install unknown apps" for this app in Android Settings and '
+                'retry, or open the release page.';
+          }
+        });
+      } else {
+        setState(() {
+          downloading = false;
+          if (outcome.status == ApkDownloadStatus.failed) {
+            downloadError = outcome.message;
+          } else {
+            downloadNotice = 'Download cancelled.';
+          }
+        });
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        downloading = false;
+        downloadError =
+            'Could not download or install the update. Open the release '
+            'page instead.';
+      });
+    }
   }
 
   @override
@@ -1045,28 +1138,52 @@ class _AboutScreenState extends State<_AboutScreen> {
                   title: const Text('Update check failed'),
                   subtitle: Text(outcome.errorMessage!),
                 ),
-              )
-            else if (outcome.hasUpdate && outcome.release != null)
+              ),
+            if (!outcome.failed && outcome.hasUpdate && outcome.release != null)
               Card(
                 color: const Color(0xFFE8F5E9),
                 child: ListTile(
                   leading: const Icon(Icons.new_releases_outlined),
                   title: Text('Update available: ${outcome.release!.tagName}'),
-                  subtitle: const Text(
-                    'Download and install the new version manually.',
+                  subtitle: Text(
+                    downloading
+                        ? 'Downloading… ${progressPercent == null ? '' : '$progressPercent%'}'
+                        : 'Download inside the app, then confirm the Android install prompt.',
                   ),
-                  trailing: FilledButton(
+                  trailing: downloading
+                      ? TextButton(
+                          onPressed: () => cancelToken?.cancel(),
+                          child: const Text('Cancel'),
+                        )
+                      : FilledButton(
+                          onPressed: () => downloadAndInstall(outcome.release!),
+                          child: const Text('Download & Install'),
+                        ),
+                ),
+              ),
+            if (outcome.hasUpdate && outcome.release != null && downloading)
+              LinearProgressIndicator(
+                value: progressPercent == null ? null : progressPercent! / 100,
+              ),
+            if (outcome.hasUpdate && downloadError != null)
+              Card(
+                color: const Color(0xFFFFF3E0),
+                child: ListTile(
+                  leading: const Icon(Icons.error_outline),
+                  title: const Text('Update problem'),
+                  subtitle: Text(downloadError!),
+                  trailing: TextButton(
                     onPressed: () {
-                      final url =
-                          outcome.release!.apkDownloadUrl ??
-                          outcome.release!.htmlUrl;
+                      final url = outcome.release?.htmlUrl;
                       if (url != null) openDownload(url);
                     },
-                    child: const Text('Download & Install'),
+                    child: const Text('Open release page'),
                   ),
                 ),
-              )
-            else
+              ),
+            if (outcome.hasUpdate && downloadNotice != null)
+              Card(child: ListTile(title: Text(downloadNotice!))),
+            if (!outcome.failed && !outcome.hasUpdate)
               const Card(
                 child: ListTile(
                   leading: Icon(Icons.check_circle_outline),

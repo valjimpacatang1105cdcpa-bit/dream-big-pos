@@ -514,6 +514,116 @@ void main() {
       expect(result.hasUpdate, isFalse);
     },
   );
+
+  group('in-app APK download', () {
+    const apkUrl = 'https://github.com/o/r/releases/download/v1/app.apk';
+    late Directory tmp;
+    setUp(() => tmp = Directory.systemTemp.createTempSync('apk_dl'));
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    test('only https GitHub APK urls are allowed', () {
+      expect(isAllowedApkUrl(apkUrl), isTrue);
+      expect(isAllowedApkUrl('http://github.com/o/r/app.apk'), isFalse);
+      expect(isAllowedApkUrl('https://evil.example.com/app.apk'), isFalse);
+      expect(isAllowedApkUrl('https://github.com/o/r/app.zip'), isFalse);
+      expect(isAllowedApkUrl(null), isFalse);
+    });
+
+    test('downloadPercent handles unknown and overflowing totals', () {
+      expect(downloadPercent(50, 200), 25);
+      expect(downloadPercent(10, null), isNull);
+      expect(downloadPercent(10, 0), isNull);
+      expect(downloadPercent(500, 200), 100);
+    });
+
+    test('ReleaseInfo reads apk asset size', () {
+      final release = ReleaseInfo.fromJson({
+        'tag_name': 'v1',
+        'assets': [
+          {'name': 'a.apk', 'browser_download_url': apkUrl, 'size': 3},
+        ],
+      });
+      expect(release.apkSize, 3);
+    });
+
+    test('downloads, reports progress, and verifies size', () async {
+      final client = MockClient.streaming((request, _) async {
+        return http.StreamedResponse(
+          Stream.fromIterable([
+            [1, 2],
+            [3, 4],
+          ]),
+          200,
+          contentLength: 4,
+        );
+      });
+      final seen = <int?>[];
+      final file = File('${tmp.path}/u.apk');
+      final result = await ApkDownloader(client: client).download(
+        url: apkUrl,
+        destination: file,
+        expectedSize: 4,
+        onProgress: (r, t) => seen.add(downloadPercent(r, t)),
+      );
+      expect(result.status, ApkDownloadStatus.success);
+      expect(file.readAsBytesSync(), [1, 2, 3, 4]);
+      expect(seen, [50, 100]);
+    });
+
+    test('size mismatch fails and removes the file', () async {
+      final client = MockClient.streaming((request, _) async {
+        return http.StreamedResponse(
+          Stream.fromIterable([
+            [1, 2],
+          ]),
+          200,
+        );
+      });
+      final file = File('${tmp.path}/u.apk');
+      final result = await ApkDownloader(client: client)
+          .download(url: apkUrl, destination: file, expectedSize: 9);
+      expect(result.status, ApkDownloadStatus.failed);
+      expect(file.existsSync(), isFalse);
+    });
+
+    test('cancel stops the download and removes the file', () async {
+      final token = DownloadCancelToken();
+      final client = MockClient.streaming((request, _) async {
+        return http.StreamedResponse(
+          Stream.fromIterable([
+            [1],
+            [2],
+            [3],
+          ]),
+          200,
+        );
+      });
+      final file = File('${tmp.path}/u.apk');
+      final result = await ApkDownloader(client: client).download(
+        url: apkUrl,
+        destination: file,
+        cancelToken: token,
+        onProgress: (_, _) => token.cancel(),
+      );
+      expect(result.status, ApkDownloadStatus.cancelled);
+      expect(file.existsSync(), isFalse);
+    });
+
+    test('network error and bad url fail gracefully', () async {
+      final client = MockClient.streaming((request, _) async {
+        throw const SocketExceptionStub();
+      });
+      final downloader = ApkDownloader(client: client);
+      final file = File('${tmp.path}/u.apk');
+      final net = await downloader.download(url: apkUrl, destination: file);
+      expect(net.status, ApkDownloadStatus.failed);
+      final bad = await downloader.download(
+        url: 'https://evil.example.com/a.apk',
+        destination: file,
+      );
+      expect(bad.status, ApkDownloadStatus.failed);
+    });
+  });
 }
 
 /// Minimal stand-in for a thrown network exception, used only to verify the

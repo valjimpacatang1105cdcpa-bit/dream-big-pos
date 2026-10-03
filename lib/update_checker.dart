@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
@@ -12,7 +14,12 @@ const String kUpdateRepoName = 'dream-big-pos';
 /// Details about the latest published GitHub release relevant to in-app
 /// update checks.
 class ReleaseInfo {
-  const ReleaseInfo({required this.tagName, this.apkDownloadUrl, this.htmlUrl});
+  const ReleaseInfo({
+    required this.tagName,
+    this.apkDownloadUrl,
+    this.apkSize,
+    this.htmlUrl,
+  });
 
   /// The release tag, e.g. `v1.1.0` or `1.1.0`.
   final String tagName;
@@ -20,6 +27,10 @@ class ReleaseInfo {
   /// Direct download URL of the `.apk` asset attached to the release, if
   /// one was uploaded.
   final String? apkDownloadUrl;
+
+  /// Size in bytes of the APK asset as reported by GitHub, used to verify
+  /// the download.
+  final int? apkSize;
 
   /// The release's GitHub web page, used as a fallback when no APK asset is
   /// attached yet.
@@ -29,16 +40,19 @@ class ReleaseInfo {
     final assets = (json['assets'] as List<dynamic>? ?? [])
         .cast<Map<String, dynamic>>();
     String? apkUrl;
+    int? apkSize;
     for (final asset in assets) {
       final name = (asset['name'] as String?) ?? '';
       if (name.toLowerCase().endsWith('.apk')) {
         apkUrl = asset['browser_download_url'] as String?;
+        apkSize = (asset['size'] as num?)?.toInt();
         break;
       }
     }
     return ReleaseInfo(
       tagName: (json['tag_name'] as String? ?? '').trim(),
       apkDownloadUrl: apkUrl,
+      apkSize: apkSize,
       htmlUrl: json['html_url'] as String?,
     );
   }
@@ -136,6 +150,118 @@ class UpdateChecker {
         errorMessage:
             'Could not check for updates. Please verify your internet '
             'connection. The app continues to work fully offline.',
+      );
+    }
+  }
+}
+
+/// Only https GitHub-hosted release assets may be downloaded in-app.
+bool isAllowedApkUrl(String? url) {
+  final uri = url == null ? null : Uri.tryParse(url);
+  if (uri == null || uri.scheme != 'https') return false;
+  final host = uri.host.toLowerCase();
+  final githubHost =
+      host == 'github.com' ||
+      host == 'objects.githubusercontent.com' ||
+      host == 'release-assets.githubusercontent.com';
+  return githubHost && uri.path.toLowerCase().endsWith('.apk');
+}
+
+/// Integer percent (0-100) for a download, or null when the total is unknown.
+int? downloadPercent(int received, int? total) {
+  if (total == null || total <= 0) return null;
+  return (received * 100 ~/ total).clamp(0, 100);
+}
+
+enum ApkDownloadStatus { success, cancelled, failed }
+
+class ApkDownloadResult {
+  const ApkDownloadResult(this.status, {this.file, this.message});
+  final ApkDownloadStatus status;
+  final File? file;
+  final String? message;
+}
+
+/// Cooperative cancel flag for an in-flight download.
+class DownloadCancelToken {
+  bool _cancelled = false;
+  bool get isCancelled => _cancelled;
+  void cancel() => _cancelled = true;
+}
+
+/// Streams a release APK to [destination]. Never throws: network, size and
+/// cancel outcomes are returned as an [ApkDownloadResult].
+class ApkDownloader {
+  ApkDownloader({http.Client? client}) : _client = client ?? http.Client();
+
+  final http.Client _client;
+
+  Future<ApkDownloadResult> download({
+    required String url,
+    required File destination,
+    int? expectedSize,
+    DownloadCancelToken? cancelToken,
+    void Function(int received, int? total)? onProgress,
+  }) async {
+    if (!isAllowedApkUrl(url)) {
+      return const ApkDownloadResult(
+        ApkDownloadStatus.failed,
+        message: 'The update link is not a trusted GitHub release APK.',
+      );
+    }
+    IOSink? openSink;
+    try {
+      final response = await _client
+          .send(http.Request('GET', Uri.parse(url)))
+          .timeout(const Duration(seconds: 20));
+      if (response.statusCode != 200) {
+        return ApkDownloadResult(
+          ApkDownloadStatus.failed,
+          message: 'Download failed (server responded ${response.statusCode}).',
+        );
+      }
+      final total =
+          response.contentLength != null && response.contentLength! > 0
+          ? response.contentLength
+          : expectedSize;
+      if (await destination.exists()) await destination.delete();
+      final sink = destination.openWrite();
+      openSink = sink;
+      var received = 0;
+      await for (final chunk in response.stream.timeout(
+        const Duration(seconds: 30),
+      )) {
+        if (cancelToken?.isCancelled ?? false) {
+          await sink.close();
+          openSink = null;
+          if (await destination.exists()) await destination.delete();
+          return const ApkDownloadResult(ApkDownloadStatus.cancelled);
+        }
+        sink.add(chunk);
+        received += chunk.length;
+        onProgress?.call(received, total);
+      }
+      await sink.flush();
+      await sink.close();
+      openSink = null;
+      if (expectedSize != null && received != expectedSize) {
+        await destination.delete();
+        return const ApkDownloadResult(
+          ApkDownloadStatus.failed,
+          message: 'Downloaded file size did not match. Please try again.',
+        );
+      }
+      return ApkDownloadResult(ApkDownloadStatus.success, file: destination);
+    } catch (_) {
+      try {
+        await openSink?.close();
+        if (await destination.exists()) await destination.delete();
+      } catch (_) {}
+      return const ApkDownloadResult(
+        ApkDownloadStatus.failed,
+        message:
+            'Download interrupted. Check your internet connection and try '
+            'again. The POS keeps working offline.',
       );
     }
   }
