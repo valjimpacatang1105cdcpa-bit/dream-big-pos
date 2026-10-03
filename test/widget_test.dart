@@ -1083,6 +1083,63 @@ void main() {
       expect(find.text('Only In A'), findsNothing);
     });
   });
+
+  group('role selection update notice', () {
+    ReleaseInfo rel(String tag) => ReleaseInfo.fromJson({
+      'tag_name': tag,
+      'html_url': 'https://github.com/x/y',
+    });
+
+    testWidgets('shows banner and version when newer release exists', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RoleSelectionScreen(
+            versionLabel: '1.0.0+8',
+            updateCheck: () async =>
+                UpdateCheckResult(hasUpdate: true, release: rel('v1.0.0.9')),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(
+        find.textContaining('May bagong update: v1.0.0.9'),
+        findsOneWidget,
+      );
+      expect(find.text('Update now'), findsOneWidget);
+      expect(
+        find.text('Version 1.0.0+8 · Offline-ready terminal'),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Later'));
+      await tester.pump();
+      expect(find.textContaining('May bagong update'), findsNothing);
+    });
+
+    testWidgets('hidden when up to date or offline', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RoleSelectionScreen(
+            updateCheck: () async => const UpdateCheckResult(hasUpdate: false),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.textContaining('May bagong update'), findsNothing);
+      await tester.pumpWidget(
+        MaterialApp(
+          key: UniqueKey(),
+          home: RoleSelectionScreen(
+            updateCheck: () async => throw Exception('offline'),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.textContaining('May bagong update'), findsNothing);
+      expect(find.text('Admin login'), findsOneWidget);
+    });
+  });
 }
 
 /// Minimal stand-in for a thrown network exception, used only to verify the

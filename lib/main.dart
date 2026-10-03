@@ -6,7 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 
-import 'dart:io' show File;
+import 'dart:io' show File, Platform;
 
 import 'dart:convert';
 
@@ -35,8 +35,148 @@ class DreamBigPosApp extends StatelessWidget {
   }
 }
 
-class RoleSelectionScreen extends StatelessWidget {
-  const RoleSelectionScreen({super.key});
+typedef SilentUpdateCheck = Future<UpdateCheckResult> Function();
+
+const Duration kUpdateRecheckInterval = Duration(hours: 4);
+
+bool get _isFlutterTest {
+  try {
+    return Platform.environment.containsKey('FLUTTER_TEST');
+  } catch (_) {
+    return false;
+  }
+}
+
+Future<UpdateCheckResult> _defaultSilentUpdateCheck() async {
+  final info = await PackageInfo.fromPlatform();
+  return UpdateChecker().checkForUpdate(currentVersion: info.version);
+}
+
+class RoleSelectionScreen extends StatefulWidget {
+  const RoleSelectionScreen({super.key, this.updateCheck, this.versionLabel});
+
+  /// Injectable silent update check. When null, the real GitHub check runs
+  /// (but never under flutter test).
+  final SilentUpdateCheck? updateCheck;
+  final String? versionLabel;
+
+  @override
+  State<RoleSelectionScreen> createState() => _RoleSelectionScreenState();
+}
+
+class _RoleSelectionScreenState extends State<RoleSelectionScreen>
+    with WidgetsBindingObserver {
+  static String? _dismissedTag;
+  ReleaseInfo? newRelease;
+  DateTime? lastCheck;
+  bool checking = false;
+  String version = '';
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    loadVersion();
+    silentCheck();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    final last = lastCheck;
+    if (last == null ||
+        DateTime.now().difference(last) >= kUpdateRecheckInterval) {
+      silentCheck();
+    }
+  }
+
+  Future<void> loadVersion() async {
+    if (widget.versionLabel != null) {
+      version = widget.versionLabel!;
+      return;
+    }
+    if (_isFlutterTest) return;
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (!mounted) return;
+      setState(() => version = '${info.version}+${info.buildNumber}');
+    } catch (_) {}
+  }
+
+  Future<void> silentCheck() async {
+    if (checking) return;
+    final check =
+        widget.updateCheck ??
+        (_isFlutterTest ? null : _defaultSilentUpdateCheck);
+    if (check == null) return;
+    checking = true;
+    lastCheck = DateTime.now();
+    try {
+      final outcome = await check().timeout(const Duration(seconds: 12));
+      if (!mounted) return;
+      if (outcome.hasUpdate && outcome.release != null) {
+        setState(() => newRelease = outcome.release);
+      }
+    } catch (_) {
+      // Offline or failed: stay silent.
+    } finally {
+      checking = false;
+    }
+  }
+
+  Widget buildUpdateBanner(BuildContext context) {
+    final release = newRelease;
+    if (release == null || _dismissedTag == release.tagName) {
+      return const SizedBox.shrink();
+    }
+    return Card(
+      color: const Color(0xFFE8F5E9),
+      margin: const EdgeInsets.only(bottom: 20),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.system_update, color: Color(0xFF2E7D32)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'May bagong update: ${release.tagName} — I-update na',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                FilledButton(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const _AboutScreen()),
+                  ),
+                  child: const Text('Update now'),
+                ),
+                const SizedBox(width: 8),
+                TextButton(
+                  onPressed: () =>
+                      setState(() => _dismissedTag = release.tagName),
+                  child: const Text('Later'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -66,6 +206,7 @@ class RoleSelectionScreen extends StatelessWidget {
                   const SizedBox(height: 8),
                   const Text('Choose how you want to continue.'),
                   const SizedBox(height: 32),
+                  buildUpdateBanner(context),
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
@@ -97,7 +238,9 @@ class RoleSelectionScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 24),
                   Text(
-                    'Offline-ready terminal',
+                    version.isEmpty
+                        ? 'Offline-ready terminal'
+                        : 'Version $version · Offline-ready terminal',
                     style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
                   ),
                 ],
