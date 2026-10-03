@@ -1113,9 +1113,7 @@ class _UpdatePanelState extends State<UpdatePanel> with WidgetsBindingObserver {
     if (!mounted) return;
     setState(() {
       checking = false;
-      if (!silent || (outcome.hasUpdate && outcome.release != null)) {
-        result = outcome;
-      }
+      result = outcome;
     });
   }
 
@@ -1253,8 +1251,10 @@ class _UpdatePanelState extends State<UpdatePanel> with WidgetsBindingObserver {
               color: const Color(0xFFFFF3E0),
               child: ListTile(
                 leading: const Icon(Icons.wifi_off),
-                title: const Text('Update check failed'),
-                subtitle: Text(outcome.errorMessage!),
+                title: const Text("Couldn't check for updates (offline)"),
+                subtitle: const Text(
+                  'Walang internet o hindi ma-check. Gumagana pa rin ang POS offline.',
+                ),
               ),
             ),
           if (!outcome.failed && outcome.hasUpdate && outcome.release != null)
@@ -1262,12 +1262,14 @@ class _UpdatePanelState extends State<UpdatePanel> with WidgetsBindingObserver {
               color: const Color(0xFFE8F5E9),
               child: ListTile(
                 leading: const Icon(Icons.new_releases_outlined),
-                title: Text('May bagong update: ${outcome.release!.tagName}'),
+                title: const Text('Update your app to the latest version'),
                 subtitle: Text(
-                  downloading
-                      ? 'Downloading… ${progressPercent == null ? '' : '$progressPercent%'}'
-                      : 'Download inside the app, then confirm the Android install prompt.',
+                  'May bagong update: ${outcome.release!.tagName}\n'
+                  'Latest: ${outcome.release!.tagName} · Your version: '
+                  '${version.isEmpty ? '-' : displayVersion(version)}\n'
+                  '${downloading ? 'Downloading… ${progressPercent == null ? '' : '$progressPercent%'}' : 'Download inside the app, then confirm the Android install prompt.'}',
                 ),
+                isThreeLine: true,
                 trailing: downloading
                     ? TextButton(
                         onPressed: () => cancelToken?.cancel(),
@@ -1302,10 +1304,14 @@ class _UpdatePanelState extends State<UpdatePanel> with WidgetsBindingObserver {
           if (outcome.hasUpdate && downloadNotice != null)
             Card(child: ListTile(title: Text(downloadNotice!))),
           if (!outcome.failed && !outcome.hasUpdate)
-            const Card(
+            Card(
               child: ListTile(
-                leading: Icon(Icons.check_circle_outline),
-                title: Text('You are on the latest version'),
+                leading: const Icon(Icons.check_circle_outline),
+                title: const Text('Your app is up to date'),
+                subtitle: Text(
+                  "You're using the latest version"
+                  '${version.isEmpty ? '' : ' (${displayVersion(version)})'}',
+                ),
               ),
             ),
         ],

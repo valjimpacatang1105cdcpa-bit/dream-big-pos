@@ -1151,12 +1151,19 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: RoleSelectionScreen(
+            versionLabel: '1.0.0+11',
             updateCheck: () async => const UpdateCheckResult(hasUpdate: false),
           ),
         ),
       );
       await tester.pump();
+      await tester.pump();
       expect(find.textContaining('May bagong update'), findsNothing);
+      expect(find.text('Your app is up to date'), findsOneWidget);
+      expect(
+        find.text("You're using the latest version (v1.0.0.11)"),
+        findsOneWidget,
+      );
       await tester.pumpWidget(
         MaterialApp(
           key: UniqueKey(),
@@ -1166,7 +1173,9 @@ void main() {
         ),
       );
       await tester.pump();
+      await tester.pump();
       expect(find.textContaining('May bagong update'), findsNothing);
+      expect(find.text("Couldn't check for updates (offline)"), findsOneWidget);
       expect(find.text('Admin login'), findsOneWidget);
     });
   });
