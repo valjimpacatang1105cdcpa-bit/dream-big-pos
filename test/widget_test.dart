@@ -451,6 +451,10 @@ void main() {
     expect(isNewerVersion('0.9.0', '1.0.0'), isFalse);
     expect(isNewerVersion('', 'not-a-version'), isFalse);
     expect(isNewerVersion('v2', '1.9.9'), isTrue);
+    expect(isNewerVersion('v1.0.0.8', '1.0.0+8'), isFalse);
+    expect(isNewerVersion('v1.0.0.9', '1.0.0+8'), isTrue);
+    expect(isNewerVersion('v1.0.1', '1.0.0+8'), isTrue);
+    expect(isNewerVersion('v1.0.0.9', '1.0.0+10'), isFalse);
   });
 
   test('ReleaseInfo.fromJson extracts the apk asset url', () {
@@ -1109,7 +1113,7 @@ void main() {
       );
       expect(find.text('Download & Install'), findsOneWidget);
       expect(
-        find.text('Version 1.0.0+8 · Offline-ready terminal'),
+        find.text('Version v1.0.0.8 · Offline-ready terminal'),
         findsOneWidget,
       );
     });

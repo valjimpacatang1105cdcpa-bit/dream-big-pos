@@ -35,6 +35,10 @@ class DreamBigPosApp extends StatelessWidget {
   }
 }
 
+/// "1.0.0+8" -> "v1.0.0.8" (same format as release tags).
+String displayVersion(String raw) =>
+    raw.isEmpty || raw == 'unknown' ? raw : 'v${raw.replaceFirst('+', '.')}';
+
 typedef SilentUpdateCheck = Future<UpdateCheckResult> Function();
 
 const Duration kUpdateRecheckInterval = Duration(hours: 4);
@@ -1077,10 +1081,10 @@ class _UpdatePanelState extends State<UpdatePanel> with WidgetsBindingObserver {
   }
 
   Future<UpdateCheckResult> defaultCheck() async {
-    var current = version.split('+').first;
+    var current = version;
     if (current.isEmpty || current == 'unknown') {
       final info = await PackageInfo.fromPlatform();
-      current = info.version;
+      current = '${info.version}+${info.buildNumber}';
     }
     return UpdateChecker().checkForUpdate(currentVersion: current);
   }
@@ -1224,7 +1228,9 @@ class _UpdatePanelState extends State<UpdatePanel> with WidgetsBindingObserver {
               leading: const Icon(Icons.storefront, color: Color(0xFF176B87)),
               title: const Text('DREAM BIG POS'),
               subtitle: Text(
-                version.isEmpty ? 'Loading version…' : 'Version $version',
+                version.isEmpty
+                    ? 'Loading version…'
+                    : 'Version ${displayVersion(version)}',
               ),
             ),
           ),
@@ -1309,7 +1315,7 @@ class _UpdatePanelState extends State<UpdatePanel> with WidgetsBindingObserver {
             child: Text(
               version.isEmpty
                   ? 'Offline-ready terminal'
-                  : 'Version $version · Offline-ready terminal',
+                  : 'Version ${displayVersion(version)} · Offline-ready terminal',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
             ),

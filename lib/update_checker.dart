@@ -75,13 +75,15 @@ class UpdateCheckResult {
   bool get failed => errorMessage != null;
 }
 
-/// Strips a leading "v"/"V" and any build-metadata suffix (e.g. "+3") from a
+/// Strips a leading "v"/"V" and turns a build suffix (e.g. "+3") into a
 /// version string, then splits it into numeric parts. Non-numeric or
 /// missing parts are treated as 0 so comparisons never throw.
 List<int> parseVersionParts(String rawVersion) {
   final cleaned = rawVersion.trim().replaceFirst(RegExp(r'^[vV]'), '');
-  final withoutBuild = cleaned.split('+').first;
-  return withoutBuild
+  // "+N" (build number) is the 4th segment, matching CI tags
+  // v{pubspecVersion}.{run_number}.
+  return cleaned
+      .replaceFirst('+', '.')
       .split('.')
       .map((part) => int.tryParse(part.trim()) ?? 0)
       .toList();
